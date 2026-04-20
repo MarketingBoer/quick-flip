@@ -81,8 +81,9 @@ class QuickFlipStrategy(IStrategy):
             return None
         with open(secrets_path) as f:
             for line in f:
+                line = line.strip().removeprefix("export ")
                 if line.startswith("OPENROUTER_API_KEY="):
-                    return line.strip().split("=", 1)[1].strip('"').strip("'")
+                    return line.split("=", 1)[1].strip('"').strip("'")
         return None
 
     def _check_daily_loss(self) -> bool:

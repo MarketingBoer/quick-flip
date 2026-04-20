@@ -7,3 +7,5 @@ user_data/backtest_results/
 user_data/logs/
 user_data/trade_journal.jsonl
 user_data/knowledge.jsonl
+tradesv3.*
+.session-summary.md
