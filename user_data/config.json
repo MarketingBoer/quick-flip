@@ -34,10 +34,17 @@
         "name": "bitvavo",
         "key": "",
         "secret": "",
-        "ccxt_config": {},
+        "ccxt_config": {
+            "options": {
+                "operatorId": "000000"
+            }
+        },
         "ccxt_async_config": {},
         "pair_whitelist": [],
-        "pair_blacklist": []
+        "pair_blacklist": [
+            "USDC/EUR",
+            "USDT/EUR"
+        ]
     },
     "pairlists": [
         {

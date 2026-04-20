@@ -1,0 +1,6 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+user_data/backtest_results/
+user_data/logs/
