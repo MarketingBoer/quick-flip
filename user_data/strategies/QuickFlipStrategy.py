@@ -29,33 +29,32 @@ class QuickFlipStrategy(IStrategy):
     can_short = False
 
     minimal_roi = {
-        "0": 0.03,
-        "30": 0.02,
-        "60": 0.015,
-        "120": 0.01,
-        "360": 0.005,
+        "0": 0.05,
+        "60": 0.03,
+        "120": 0.02,
+        "360": 0.015,
     }
 
-    stoploss = -0.05
+    stoploss = -0.03
 
     trailing_stop = True
-    trailing_stop_positive = 0.01
-    trailing_stop_positive_offset = 0.02
+    trailing_stop_positive = 0.015
+    trailing_stop_positive_offset = 0.025
     trailing_only_offset_is_reached = True
 
-    timeframe = "5m"
+    timeframe = "1h"
     process_only_new_candles = True
     startup_candle_count = 50
-    max_open_trades = 3
+    max_open_trades = 2
 
-    # AI config
-    ai_enabled = True
+    # AI config — alleen voor post-trade analyse, NIET in entry-loop
+    ai_enabled = False
     ai_model = "google/gemini-2.5-flash-preview"
     ai_cooldown_seconds = 30
     ai_confidence_threshold = 0.7
 
     # Safety
-    daily_loss_limit_eur = 10.0
+    daily_loss_limit_eur = 5.0
     research_max_per_day = 3
 
     def bot_start(self, **kwargs) -> None:

@@ -1,9 +1,9 @@
 {
     "trading_mode": "spot",
     "margin_mode": "",
-    "max_open_trades": 3,
+    "max_open_trades": 2,
     "stake_currency": "EUR",
-    "stake_amount": 15,
+    "stake_amount": 20,
     "tradable_balance_ratio": 0.99,
     "fiat_display_currency": "EUR",
     "dry_run": true,
@@ -32,8 +32,8 @@
     },
     "exchange": {
         "name": "bitvavo",
-        "key": "YOUR_BITVAVO_KEY",
-        "secret": "YOUR_BITVAVO_SECRET",
+        "key": "",
+        "secret": "",
         "ccxt_config": {
             "options": {
                 "operatorId": "000000"
@@ -74,10 +74,10 @@
         "listen_port": 8080,
         "verbosity": "error",
         "enable_openapi": false,
-        "jwt_secret_key": "GENERATE_WITH_python3_-c_import_secrets_print_secrets.token_hex_32",
+        "jwt_secret_key": "e5c0e389054e84b54aed2f889a5c6b4eda2e035f44c2b35cbef320698cc0baa6",
         "CORS_origins": [],
         "username": "quickflip",
-        "password": "YOUR_STRONG_PASSWORD"
+        "password": "qf-2026-bitvavo-x9k"
     },
     "bot_name": "QuickFlip",
     "initial_state": "running",
