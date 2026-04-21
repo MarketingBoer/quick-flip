@@ -42,7 +42,7 @@ class QuickFlipStrategy(IStrategy):
     trailing_stop_positive_offset = 0.025
     trailing_only_offset_is_reached = True
 
-    timeframe = "1h"
+    timeframe = "15m"
     process_only_new_candles = True
     startup_candle_count = 50
     max_open_trades = 2
@@ -350,7 +350,7 @@ REGELS:
                 & (dataframe["rsi"] > 30)
                 & (dataframe["macdhist"] > 0)
                 & (dataframe["volume"] > dataframe["volume_sma"])
-                & (dataframe["close"] < dataframe["bb_middle"])
+                & (dataframe["close"] < dataframe["bb_upper"])
                 & (dataframe["volume"] > 0)
             ),
             "enter_long",
