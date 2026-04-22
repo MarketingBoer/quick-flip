@@ -1,7 +1,13 @@
 import logging
+import os
+import sys
 from datetime import datetime, timedelta
 from pandas import DataFrame
 from typing import Optional
+
+_project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+if _project_root not in sys.path:
+    sys.path.insert(0, _project_root)
 
 from freqtrade.enums import CandleType
 from freqtrade.strategy import IStrategy, Trade, IntParameter, DecimalParameter
