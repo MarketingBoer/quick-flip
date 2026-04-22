@@ -1,9 +1,4 @@
 import logging
-import json
-import os
-import re
-import time
-from collections import deque
 from datetime import datetime, timedelta
 from pandas import DataFrame
 from typing import Optional
@@ -15,7 +10,6 @@ import talib.abstract as ta
 from technical import qtpylib
 
 from user_data.agents import learning_db
-from user_data.agents.openrouter_client import CallLimitExceeded
 from user_data.agents.regime_detector import RegimeDetector
 from user_data.agents.confluence_scorer import score_confluence
 from user_data.agents.pre_trade_gatekeeper import PreTradeGatekeeper
@@ -23,13 +17,6 @@ from user_data.agents.post_trade_analyzer import PostTradeAnalyzer
 from user_data.agents.pattern_aggregator import PatternAggregator
 
 logger = logging.getLogger(__name__)
-
-TRADE_JOURNAL = os.path.expanduser(
-    "~/Projects/quick-flip/user_data/trade_journal.jsonl"
-)
-KNOWLEDGE_FILE = os.path.expanduser(
-    "~/Projects/quick-flip/user_data/knowledge.jsonl"
-)
 
 
 class QuickFlipStrategy(IStrategy):
@@ -67,21 +54,11 @@ class QuickFlipStrategy(IStrategy):
     sell_rsi_exit = IntParameter(55, 75, default=65, space="sell")
     sell_rsi_high = IntParameter(65, 75, default=70, space="sell")
 
-    # AI config — alleen voor post-trade analyse, NIET in entry-loop
-    ai_enabled = False
-    ai_model = "google/gemini-2.5-flash-preview"
-    ai_cooldown_seconds = 30
-    ai_confidence_threshold = 0.7
-
     # Safety
     daily_loss_limit_eur = 5.0
-    research_max_per_day = 3
 
     def bot_start(self, **kwargs) -> None:
-        self._last_ai_call: dict[str, float] = {}
         self._daily_loss = {"date": "", "loss": 0.0}
-        self._research_today = {"date": "", "count": 0}
-        self._pending_research: list[str] = []
         self._last_pattern_date = ""
 
         learning_db.init_db()
@@ -93,21 +70,10 @@ class QuickFlipStrategy(IStrategy):
         self.pattern_aggregator = PatternAggregator()
         logger.info("Agent team initialized: LearningDB, RegimeDetector, ConfluenceScorer, Gatekeeper, Analyzer, Aggregator")
 
-        api_key = self._get_openrouter_key()
-        if api_key:
-            logger.info("OpenRouter API key loaded")
-        else:
-            logger.warning("No OpenRouter API key — AI disabled")
-            self.ai_enabled = False
-
     def informative_pairs(self):
         return [("BTC/EUR", "15m", CandleType.SPOT)]
 
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
-        if self._pending_research:
-            query = self._pending_research.pop(0)
-            self._do_research(query)
-
         try:
             self.regime_detector.update(self.dp)
         except Exception as e:
@@ -127,17 +93,6 @@ class QuickFlipStrategy(IStrategy):
             except Exception as e:
                 logger.warning(f"Knowledge expiry check failed: {e}")
 
-    def _get_openrouter_key(self) -> Optional[str]:
-        secrets_path = os.path.expanduser("~/.secrets")
-        if not os.path.exists(secrets_path):
-            return None
-        with open(secrets_path) as f:
-            for line in f:
-                line = line.strip().removeprefix("export ")
-                if line.startswith("OPENROUTER_API_KEY="):
-                    return line.split("=", 1)[1].strip('"').strip("'")
-        return None
-
     def _check_daily_loss(self) -> bool:
         today = datetime.now().strftime("%Y-%m-%d")
         if self._daily_loss["date"] != today:
@@ -155,226 +110,6 @@ class QuickFlipStrategy(IStrategy):
             self._daily_loss = {"date": today, "loss": 0.0}
         if loss_eur > 0:
             self._daily_loss["loss"] += loss_eur
-
-    def _do_research(self, query: str) -> Optional[str]:
-        today = datetime.now().strftime("%Y-%m-%d")
-        if self._research_today["date"] != today:
-            self._research_today = {"date": today, "count": 0}
-        if self._research_today["count"] >= self.research_max_per_day:
-            return None
-
-        api_key = self._get_openrouter_key()
-        if not api_key:
-            return None
-
-        try:
-            import httpx
-
-            response = httpx.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": "google/gemini-2.5-flash-preview",
-                    "messages": [{"role": "user", "content": query}],
-                    "max_tokens": 300,
-                    "temperature": 0.2,
-                },
-                timeout=15,
-            )
-            self._research_today["count"] += 1
-
-            if response.status_code == 200:
-                content = response.json()["choices"][0]["message"]["content"]
-                self._save_knowledge(query, content)
-                return content
-        except Exception as e:
-            logger.warning(f"Research failed: {e}")
-        return None
-
-    def _save_knowledge(self, query: str, answer: str):
-        try:
-            with open(KNOWLEDGE_FILE, "a") as f:
-                f.write(json.dumps({
-                    "timestamp": datetime.now().isoformat(),
-                    "query": query,
-                    "answer": answer[:500],
-                }) + "\n")
-        except Exception:
-            pass
-
-    def _get_knowledge_context(self) -> str:
-        if not os.path.exists(KNOWLEDGE_FILE):
-            return ""
-        try:
-            entries = deque(maxlen=5)
-            with open(KNOWLEDGE_FILE) as f:
-                for line in f:
-                    entries.append(json.loads(line))
-            return "\n".join(
-                f"- {e['query'][:60]}: {e['answer'][:100]}" for e in entries
-            )
-        except Exception:
-            return ""
-
-    def _parse_ai_response(self, content: str) -> dict:
-        content = content.strip()
-        if content.startswith("```"):
-            content = content.split("\n", 1)[-1].rsplit("```", 1)[0]
-
-        match = re.search(r'\{[^{}]*"confidence"[^{}]*\}', content)
-        if not match:
-            return {"confidence": 0.5, "reason": "parse_error"}
-
-        try:
-            result = json.loads(match.group())
-            conf = result.get("confidence", 0.5)
-            if isinstance(conf, str):
-                conf = float(conf)
-            conf = max(0.0, min(1.0, conf))
-            result["confidence"] = conf
-            return result
-        except (json.JSONDecodeError, ValueError):
-            return {"confidence": 0.5, "reason": "json_error"}
-
-    def _ask_ai(self, pair: str, dataframe: DataFrame, current_rate: float) -> dict:
-        now = time.time()
-        last_call = self._last_ai_call.get(pair, 0)
-        if now - last_call < self.ai_cooldown_seconds:
-            return {"confidence": 0.5, "reason": "cooldown"}
-
-        api_key = self._get_openrouter_key()
-        if not api_key:
-            return {"confidence": 0.5, "reason": "no_api_key"}
-
-        try:
-            import httpx
-
-            last_10 = dataframe.tail(10)
-            price_data = {
-                "prices": last_10["close"].tolist(),
-                "volumes": last_10["volume"].tolist(),
-                "rsi": round(float(last_10["rsi"].iloc[-1]), 1),
-                "ema_fast": round(float(last_10["ema_fast"].iloc[-1]), 4),
-                "ema_slow": round(float(last_10["ema_slow"].iloc[-1]), 4),
-                "volume_sma": round(float(last_10["volume_sma"].iloc[-1]), 1),
-                "current_rate": current_rate,
-            }
-
-            recent_trades = self._get_recent_trades(pair)
-            knowledge = self._get_knowledge_context()
-
-            prompt = f"""Je bent een crypto trading analist op Bitvavo (NL exchange).
-
-MISSIE:
-- Dit is een GROEIPROJECT. We beginnen klein (€46) en laten kennis en kapitaal samen groeien.
-- Elke trade is een leermoment. Bescherm het kapitaal ALTIJD — verlies vermijden is belangrijker dan winst pakken.
-- De eigenaar zal af en toe bijstorten als de bot bewezen slim handelt.
-- Later upgraden we naar slimmere AI-modellen. Jij bent fase 1: bewijs dat je consistent kunt zijn.
-- Doel nu: een paar euro per dag. €10/maand is al een succes. Niet hebberig zijn. Geduld > snelheid.
-
-EXCHANGE KENNIS:
-- Bitvavo fees: 0.20% maker/taker (roundtrip 0.40%)
-- Minimum order: €5 (check minOrderInQuoteAsset per market)
-- Ons kapitaal: ~€46, max 3 open trades, ~€15 per positie
-- Doel: momentum trades, snel in/uit, 1-3% winst per trade
-- Bij twijfel: NIET kopen. Fees vreten kleine winsten op.
-- Liever 1 goede trade per dag dan 10 matige trades.
-
-GELEERDE KENNIS:
-{knowledge if knowledge else "Nog geen opgebouwde kennis."}
-
-MARKTDATA:
-Pair: {pair}
-Laatste 10 candles (5min): {json.dumps(price_data)}
-
-EERDERE TRADES (leer hiervan):
-{json.dumps(recent_trades) if recent_trades else "Geen eerdere trades."}
-
-OPDRACHT: Beoordeel of dit een goede entry is.
-Antwoord ALLEEN met dit JSON object:
-{{"confidence": 0.0-1.0, "reason": "max 20 woorden"}}
-
-REGELS:
-- confidence >= 0.7 = kopen (sterk momentum + volume bevestiging)
-- confidence 0.3-0.7 = overslaan (niet overtuigend genoeg)
-- confidence < 0.3 = vermijden (bearish signalen)
-- Wees STRENG. Met 0.40% fees moet de verwachte move > 1% zijn.
-- RSI > 70 = overbought = NIET kopen. RSI < 30 = oversold = potentiële bounce.
-- Volume spike + EMA crossover = sterkste signaal.
-- Als eerdere trades op dit pair verlies gaven: extra voorzichtig."""
-
-            response = httpx.post(
-                "https://openrouter.ai/api/v1/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": self.ai_model,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "max_tokens": 100,
-                    "temperature": 0.1,
-                },
-                timeout=5,
-            )
-
-            self._last_ai_call[pair] = time.time()
-
-            if response.status_code == 200:
-                content = response.json()["choices"][0]["message"]["content"]
-                result = self._parse_ai_response(content)
-                logger.info(f"AI verdict for {pair}: {result}")
-                return result
-            else:
-                logger.warning(f"AI API error: {response.status_code}")
-                return {"confidence": 0.5, "reason": "api_error"}
-
-        except Exception as e:
-            logger.warning(f"AI call failed: {e}")
-            return {"confidence": 0.5, "reason": str(e)[:50]}
-
-    def _get_recent_trades(self, pair: str) -> list:
-        if not os.path.exists(TRADE_JOURNAL):
-            return []
-        trades = []
-        try:
-            recent_lines = deque(maxlen=200)
-            with open(TRADE_JOURNAL) as f:
-                for line in f:
-                    recent_lines.append(line)
-            for line in recent_lines:
-                entry = json.loads(line)
-                if entry.get("pair") == pair:
-                    trades.append(entry)
-        except Exception:
-            return []
-        return trades[-5:]
-
-    def _log_trade(self, trade_data: dict):
-        try:
-            with open(TRADE_JOURNAL, "a") as f:
-                f.write(json.dumps(trade_data) + "\n")
-        except Exception as e:
-            logger.warning(f"Failed to log trade: {e}")
-
-    def _count_losses(self, pair: str) -> int:
-        if not os.path.exists(TRADE_JOURNAL):
-            return 0
-        count = 0
-        try:
-            with open(TRADE_JOURNAL) as f:
-                for line in f:
-                    e = json.loads(line)
-                    if (e.get("action") == "closed"
-                            and e.get("pair") == pair
-                            and e.get("profit_pct", 0) < 0):
-                        count += 1
-        except Exception:
-            pass
-        return count
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         for period in range(5, 16):
@@ -523,23 +258,12 @@ REGELS:
         if order.ft_order_side != "sell":
             return
 
-        profit_ratio = trade.calc_profit_ratio(order.safe_price)
         profit_abs = trade.calc_profit(order.safe_price)
 
-        self._log_trade({
-            "timestamp": current_time.isoformat(),
-            "pair": pair,
-            "action": "closed",
-            "open_rate": trade.open_rate,
-            "close_rate": order.safe_price,
-            "profit_pct": round(profit_ratio * 100, 2),
-            "profit_eur": round(profit_abs, 2),
-            "exit_reason": trade.exit_reason or "unknown",
-            "duration_minutes": round(
-                (current_time - trade.open_date_utc).total_seconds() / 60, 1
-            ),
-            "ai_model": self.ai_model,
-        })
+        logger.info(
+            f"Trade closed: {pair} profit=€{profit_abs:.2f} "
+            f"exit={trade.exit_reason or 'unknown'}"
+        )
 
         if profit_abs < 0:
             self._record_loss(abs(profit_abs))
@@ -553,11 +277,3 @@ REGELS:
             self.pattern_aggregator.recalculate()
         except Exception as e:
             logger.warning(f"Pattern recalculation after trade failed: {e}")
-
-        loss_count = self._count_losses(pair)
-        if loss_count >= 3 and loss_count % 3 == 0:
-            self._pending_research.append(
-                f"Crypto {pair} heeft {loss_count} keer verlies gegeven op Bitvavo. "
-                f"Analyse waarom. Huidige marktcondities, nieuws, technische analyse. "
-                f"Moet ik dit pair vermijden of is er een patroon?"
-            )
