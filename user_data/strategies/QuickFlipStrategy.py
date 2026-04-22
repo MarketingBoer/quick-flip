@@ -4,7 +4,7 @@ import os
 import re
 import time
 from collections import deque
-from datetime import datetime
+from datetime import datetime, timedelta
 from pandas import DataFrame
 from typing import Optional
 
@@ -467,37 +467,29 @@ REGELS:
             )
             return False
 
-        if not self.ai_enabled:
-            return True
+        try:
+            dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+            if not dataframe.empty and "confluence_score" in dataframe.columns:
+                last_row = dataframe.iloc[-1]
+                confluence_score = float(last_row.get("confluence_score", 50))
+                setup_type = str(last_row.get("setup_type", "weak_signal"))
+            else:
+                confluence_score = 50.0
+                setup_type = "weak_signal"
 
-        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
-        if dataframe.empty:
-            return True
-
-        ai_result = self._ask_ai(pair, dataframe, rate)
-        confidence = ai_result.get("confidence", 0.5)
-
-        self._log_trade({
-            "timestamp": current_time.isoformat(),
-            "pair": pair,
-            "action": "entry_check",
-            "rate": rate,
-            "ai_confidence": confidence,
-            "ai_reason": ai_result.get("reason", ""),
-            "approved": confidence >= self.ai_confidence_threshold,
-        })
-
-        if confidence < self.ai_confidence_threshold:
-            logger.info(
-                f"AI rejected {pair}: confidence={confidence}, "
-                f"reason={ai_result.get('reason')}"
+            regime = self.regime_detector.get_current()
+            approved = self.gatekeeper.evaluate(
+                pair=pair,
+                setup_type=setup_type,
+                confluence_score=confluence_score,
+                regime=regime,
             )
-            return False
+            if not approved:
+                logger.info(f"Gatekeeper rejected {pair} ({setup_type}, score={confluence_score})")
+                return False
+        except Exception as e:
+            logger.warning(f"Gatekeeper error, fail-open: {e}")
 
-        logger.info(
-            f"AI approved {pair}: confidence={confidence}, "
-            f"reason={ai_result.get('reason')}"
-        )
         return True
 
     def confirm_trade_exit(
@@ -517,6 +509,17 @@ REGELS:
     def order_filled(
         self, pair: str, trade: Trade, order, current_time: datetime, **kwargs
     ) -> None:
+        if order.ft_order_side == "buy":
+            try:
+                pred = learning_db.get_prediction_by_pair_time(
+                    pair, (current_time - timedelta(minutes=30)).isoformat()
+                )
+                if pred:
+                    learning_db.update_prediction_trade_id(pred["id"], str(trade.trade_id))
+            except Exception as e:
+                logger.warning(f"Failed to link prediction to trade: {e}")
+            return
+
         if order.ft_order_side != "sell":
             return
 
@@ -540,6 +543,16 @@ REGELS:
 
         if profit_abs < 0:
             self._record_loss(abs(profit_abs))
+
+        try:
+            self.post_analyzer.analyze(trade)
+        except Exception as e:
+            logger.warning(f"Post-trade analysis failed: {e}")
+
+        try:
+            self.pattern_aggregator.recalculate()
+        except Exception as e:
+            logger.warning(f"Pattern recalculation after trade failed: {e}")
 
         loss_count = self._count_losses(pair)
         if loss_count >= 3 and loss_count % 3 == 0:
