@@ -8,7 +8,7 @@ from datetime import datetime
 from pandas import DataFrame
 from typing import Optional
 
-from freqtrade.strategy import IStrategy, Trade
+from freqtrade.strategy import IStrategy, Trade, IntParameter, DecimalParameter
 
 import talib.abstract as ta
 from technical import qtpylib
@@ -46,6 +46,17 @@ class QuickFlipStrategy(IStrategy):
     process_only_new_candles = True
     startup_candle_count = 50
     max_open_trades = 2
+
+    # Hyperopt parameter spaces
+    buy_rsi_lower = IntParameter(20, 35, default=30, space="buy")
+    buy_rsi_upper = IntParameter(65, 72, default=70, space="buy")
+    buy_ema_fast = IntParameter(5, 15, default=8, space="buy")
+    buy_ema_slow = IntParameter(15, 40, default=21, space="buy")
+    buy_bb_window = IntParameter(15, 30, default=20, space="buy")
+    buy_volume_mult = DecimalParameter(0.9, 1.5, decimals=1, default=1.0, space="buy")
+
+    sell_rsi_exit = IntParameter(55, 75, default=65, space="sell")
+    sell_rsi_high = IntParameter(65, 75, default=70, space="sell")
 
     # AI config — alleen voor post-trade analyse, NIET in entry-loop
     ai_enabled = False
@@ -325,8 +336,11 @@ REGELS:
         return count
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        dataframe["ema_fast"] = ta.EMA(dataframe, timeperiod=8)
-        dataframe["ema_slow"] = ta.EMA(dataframe, timeperiod=21)
+        for period in range(5, 16):
+            dataframe[f"ema_{period}"] = ta.EMA(dataframe, timeperiod=period)
+        for period in range(15, 41):
+            dataframe[f"ema_{period}"] = ta.EMA(dataframe, timeperiod=period)
+
         dataframe["rsi"] = ta.RSI(dataframe, timeperiod=14)
         dataframe["volume_sma"] = ta.SMA(dataframe["volume"], timeperiod=20)
 
@@ -335,22 +349,27 @@ REGELS:
         dataframe["macdsignal"] = macd["macdsignal"]
         dataframe["macdhist"] = macd["macdhist"]
 
-        bollinger = qtpylib.bollinger_bands(dataframe["close"], window=20, stds=2)
-        dataframe["bb_lower"] = bollinger["lower"]
-        dataframe["bb_middle"] = bollinger["mid"]
-        dataframe["bb_upper"] = bollinger["upper"]
+        for window in range(15, 31):
+            bb = qtpylib.bollinger_bands(dataframe["close"], window=window, stds=2)
+            dataframe[f"bb_lower_{window}"] = bb["lower"]
+            dataframe[f"bb_middle_{window}"] = bb["mid"]
+            dataframe[f"bb_upper_{window}"] = bb["upper"]
 
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        ema_fast = dataframe[f"ema_{self.buy_ema_fast.value}"]
+        ema_slow = dataframe[f"ema_{self.buy_ema_slow.value}"]
+        bb_upper = dataframe[f"bb_upper_{self.buy_bb_window.value}"]
+
         dataframe.loc[
             (
-                (dataframe["ema_fast"] > dataframe["ema_slow"])
-                & (dataframe["rsi"] < 70)
-                & (dataframe["rsi"] > 30)
+                (ema_fast > ema_slow)
+                & (dataframe["rsi"] < self.buy_rsi_upper.value)
+                & (dataframe["rsi"] > self.buy_rsi_lower.value)
                 & (dataframe["macdhist"] > 0)
-                & (dataframe["volume"] > dataframe["volume_sma"])
-                & (dataframe["close"] < dataframe["bb_upper"])
+                & (dataframe["volume"] > dataframe["volume_sma"] * self.buy_volume_mult.value)
+                & (dataframe["close"] < bb_upper)
                 & (dataframe["volume"] > 0)
             ),
             "enter_long",
@@ -358,14 +377,17 @@ REGELS:
         return dataframe
 
     def populate_exit_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
+        ema_fast = dataframe[f"ema_{self.buy_ema_fast.value}"]
+        ema_slow = dataframe[f"ema_{self.buy_ema_slow.value}"]
+
         dataframe.loc[
             (
-                (dataframe["ema_fast"] < dataframe["ema_slow"])
-                & (dataframe["rsi"] > 70)
+                (ema_fast < ema_slow)
+                & (dataframe["rsi"] > self.sell_rsi_high.value)
             )
             | (
                 (dataframe["macdhist"] < 0)
-                & (dataframe["rsi"] > 65)
+                & (dataframe["rsi"] > self.sell_rsi_exit.value)
             ),
             "exit_long",
         ] = 1
@@ -384,6 +406,14 @@ REGELS:
         **kwargs,
     ) -> bool:
         if not self._check_daily_loss():
+            return False
+
+        min_exit_value = rate * amount * (1 + self.stoploss)
+        if min_exit_value < 5.5:
+            logger.warning(
+                f"Skipping {pair}: position after stoploss (€{min_exit_value:.2f}) "
+                f"would be below Bitvavo minimum order (€5)"
+            )
             return False
 
         if not self.ai_enabled:
@@ -431,18 +461,26 @@ REGELS:
         current_time: datetime,
         **kwargs,
     ) -> bool:
-        profit_ratio = trade.calc_profit_ratio(rate)
-        profit_abs = trade.calc_profit(rate)
+        return True
+
+    def order_filled(
+        self, pair: str, trade: Trade, order, current_time: datetime, **kwargs
+    ) -> None:
+        if order.ft_order_side != "sell":
+            return
+
+        profit_ratio = trade.calc_profit_ratio(order.safe_price)
+        profit_abs = trade.calc_profit(order.safe_price)
 
         self._log_trade({
             "timestamp": current_time.isoformat(),
             "pair": pair,
             "action": "closed",
             "open_rate": trade.open_rate,
-            "close_rate": rate,
+            "close_rate": order.safe_price,
             "profit_pct": round(profit_ratio * 100, 2),
             "profit_eur": round(profit_abs, 2),
-            "exit_reason": exit_reason,
+            "exit_reason": trade.exit_reason or "unknown",
             "duration_minutes": round(
                 (current_time - trade.open_date_utc).total_seconds() / 60, 1
             ),
@@ -459,5 +497,3 @@ REGELS:
                 f"Analyse waarom. Huidige marktcondities, nieuws, technische analyse. "
                 f"Moet ik dit pair vermijden of is er een patroon?"
             )
-
-        return True
