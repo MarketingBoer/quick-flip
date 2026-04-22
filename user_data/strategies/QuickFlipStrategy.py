@@ -12,6 +12,7 @@ if _project_root not in sys.path:
 from freqtrade.enums import CandleType
 from freqtrade.strategy import IStrategy, Trade, IntParameter, DecimalParameter
 
+import numpy as np
 import talib.abstract as ta
 from technical import qtpylib
 
@@ -31,18 +32,13 @@ class QuickFlipStrategy(IStrategy):
     can_short = False
 
     minimal_roi = {
-        "0": 0.05,
-        "60": 0.03,
-        "120": 0.02,
-        "360": 0.015,
+        "0": 0.18,
     }
 
     stoploss = -0.03
 
-    trailing_stop = True
-    trailing_stop_positive = 0.015
-    trailing_stop_positive_offset = 0.025
-    trailing_only_offset_is_reached = True
+    trailing_stop = False
+    use_custom_stoploss = True
 
     timeframe = "15m"
     process_only_new_candles = True
@@ -137,6 +133,41 @@ class QuickFlipStrategy(IStrategy):
             dataframe[f"bb_middle_{window}"] = bb["mid"]
             dataframe[f"bb_upper_{window}"] = bb["upper"]
 
+        dataframe["atr_10"] = ta.ATR(dataframe, timeperiod=10)
+
+        st_period, st_mult = 10, 3.0
+        hl2 = (dataframe["high"] + dataframe["low"]) / 2
+        st_atr = ta.ATR(dataframe, timeperiod=st_period)
+        upper = hl2 + st_mult * st_atr
+        lower = hl2 - st_mult * st_atr
+        supertrend = np.zeros(len(dataframe))
+        direction = np.ones(len(dataframe))
+        for i in range(1, len(dataframe)):
+            if lower.iloc[i] > lower.iloc[i - 1] or dataframe["close"].iloc[i - 1] < lower.iloc[i - 1]:
+                lower.iloc[i] = lower.iloc[i]
+            else:
+                lower.iloc[i] = lower.iloc[i - 1]
+            if upper.iloc[i] < upper.iloc[i - 1] or dataframe["close"].iloc[i - 1] > upper.iloc[i - 1]:
+                upper.iloc[i] = upper.iloc[i]
+            else:
+                upper.iloc[i] = upper.iloc[i - 1]
+            if direction[i - 1] == 1:
+                if dataframe["close"].iloc[i] < lower.iloc[i]:
+                    direction[i] = -1
+                    supertrend[i] = upper.iloc[i]
+                else:
+                    direction[i] = 1
+                    supertrend[i] = lower.iloc[i]
+            else:
+                if dataframe["close"].iloc[i] > upper.iloc[i]:
+                    direction[i] = 1
+                    supertrend[i] = lower.iloc[i]
+                else:
+                    direction[i] = -1
+                    supertrend[i] = upper.iloc[i]
+        dataframe["supertrend"] = supertrend
+        dataframe["supertrend_dir"] = direction
+
         return dataframe
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
@@ -184,6 +215,41 @@ class QuickFlipStrategy(IStrategy):
             "exit_long",
         ] = 1
         return dataframe
+
+    def custom_stoploss(
+        self, pair: str, trade: Trade, current_time: datetime,
+        current_rate: float, current_profit: float, after_fill: bool,
+        **kwargs,
+    ) -> float:
+        if current_profit < 0.02:
+            return self.stoploss
+
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if dataframe.empty or "atr_10" not in dataframe.columns:
+            return self.stoploss
+
+        atr = dataframe["atr_10"].iloc[-1]
+        if atr <= 0:
+            return self.stoploss
+
+        atr_stop = (atr * 2.0) / current_rate
+        return max(-atr_stop, self.stoploss)
+
+    def custom_exit(
+        self, pair: str, trade: Trade, current_time: datetime,
+        current_rate: float, current_profit: float, **kwargs,
+    ) -> Optional[str]:
+        if current_profit < 0.01:
+            return None
+
+        dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
+        if dataframe.empty or "supertrend_dir" not in dataframe.columns:
+            return None
+
+        if dataframe["supertrend_dir"].iloc[-1] == -1:
+            return "supertrend_reversal"
+
+        return None
 
     def confirm_trade_entry(
         self,

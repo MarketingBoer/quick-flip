@@ -1,0 +1,115 @@
+{
+  "trading_mode": "spot",
+  "margin_mode": "",
+  "max_open_trades": 2,
+  "stake_currency": "EUR",
+  "stake_amount": 10,
+  "tradable_balance_ratio": 0.95,
+  "fiat_display_currency": "EUR",
+  "dry_run": false,
+  "dry_run_wallet": 46,
+  "cancel_open_orders_on_exit": true,
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "exit_timeout_count": 0,
+    "unit": "minutes"
+  },
+  "entry_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1,
+    "price_last_balance": 0.0,
+    "check_depth_of_market": {
+      "enabled": false,
+      "bids_to_ask_delta": 1
+    }
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "use_order_book": true,
+    "order_book_top": 1
+  },
+  "exchange": {
+    "name": "bitvavo",
+    "key": "9866b901616e10b5fbd566fb326f3258baff356a41395d1beeb485c3f6ad495e",
+    "secret": "8c6274e30e2874b9a59e114f15773896d755fc5a709bf1b337ba776e9951cbcb856e616da8531a4e19ffe4fb588d85604c8fdd4b02f855a046cfc025d270a99c",
+    "ccxt_config": {
+      "options": {
+        "operatorId": "000000"
+      }
+    },
+    "ccxt_async_config": {},
+    "pair_whitelist": [
+      "BTC/EUR",
+      "ETH/EUR",
+      "XRP/EUR",
+      "SOL/EUR",
+      "ADA/EUR",
+      "HYPE/EUR",
+      "SUI/EUR",
+      "PEPE/EUR",
+      "LINK/EUR",
+      "FET/EUR",
+      "DOGE/EUR",
+      "ONDO/EUR",
+      "WLD/EUR",
+      "ENA/EUR",
+      "SEI/EUR",
+      "HBAR/EUR",
+      "AVAX/EUR",
+      "DOT/EUR",
+      "NEAR/EUR",
+      "ATOM/EUR",
+      "UNI/EUR",
+      "OP/EUR",
+      "ARB/EUR",
+      "APT/EUR",
+      "RENDER/EUR",
+      "INJ/EUR",
+      "TIA/EUR",
+      "LTC/EUR",
+      "ALGO/EUR"
+    ],
+    "pair_blacklist": [
+      "USDC/EUR",
+      "USDT/EUR",
+      "SPK/EUR",
+      "PROM/EUR",
+      "SUPER/EUR",
+      "MERL/EUR",
+      "HIGH/EUR",
+      "AAVE/EUR",
+      "TAO/EUR",
+      "WIF/EUR",
+      "PORTAL/EUR"
+    ]
+  },
+  "pairlists": [
+    {
+      "method": "StaticPairList"
+    }
+  ],
+  "telegram": {
+    "enabled": false,
+    "token": "",
+    "chat_id": ""
+  },
+  "api_server": {
+    "enabled": true,
+    "listen_ip_address": "127.0.0.1",
+    "listen_port": 8080,
+    "verbosity": "error",
+    "enable_openapi": false,
+    "jwt_secret_key": "e5c0e389054e84b54aed2f889a5c6b4eda2e035f44c2b35cbef320698cc0baa6",
+    "CORS_origins": [],
+    "username": "quickflip",
+    "password": "qf-2026-bitvavo-x9k"
+  },
+  "bot_name": "QuickFlip",
+  "initial_state": "running",
+  "force_entry_enable": false,
+  "internals": {
+    "process_throttle_secs": 5
+  }
+}
