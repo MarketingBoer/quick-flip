@@ -8,10 +8,19 @@ from datetime import datetime
 from pandas import DataFrame
 from typing import Optional
 
+from freqtrade.enums import CandleType
 from freqtrade.strategy import IStrategy, Trade, IntParameter, DecimalParameter
 
 import talib.abstract as ta
 from technical import qtpylib
+
+from user_data.agents import learning_db
+from user_data.agents.openrouter_client import CallLimitExceeded
+from user_data.agents.regime_detector import RegimeDetector
+from user_data.agents.confluence_scorer import score_confluence
+from user_data.agents.pre_trade_gatekeeper import PreTradeGatekeeper
+from user_data.agents.post_trade_analyzer import PostTradeAnalyzer
+from user_data.agents.pattern_aggregator import PatternAggregator
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +82,16 @@ class QuickFlipStrategy(IStrategy):
         self._daily_loss = {"date": "", "loss": 0.0}
         self._research_today = {"date": "", "count": 0}
         self._pending_research: list[str] = []
+        self._last_pattern_date = ""
+
+        learning_db.init_db()
+        self.learning_db = learning_db
+        self.regime_detector = RegimeDetector()
+        self.confluence_scorer = score_confluence
+        self.gatekeeper = PreTradeGatekeeper()
+        self.post_analyzer = PostTradeAnalyzer()
+        self.pattern_aggregator = PatternAggregator()
+        logger.info("Agent team initialized: LearningDB, RegimeDetector, ConfluenceScorer, Gatekeeper, Analyzer, Aggregator")
 
         api_key = self._get_openrouter_key()
         if api_key:
@@ -81,10 +100,32 @@ class QuickFlipStrategy(IStrategy):
             logger.warning("No OpenRouter API key — AI disabled")
             self.ai_enabled = False
 
+    def informative_pairs(self):
+        return [("BTC/EUR", "15m", CandleType.SPOT)]
+
     def bot_loop_start(self, current_time: datetime, **kwargs) -> None:
         if self._pending_research:
             query = self._pending_research.pop(0)
             self._do_research(query)
+
+        try:
+            self.regime_detector.update(self.dp)
+        except Exception as e:
+            logger.warning(f"Regime detector update failed: {e}")
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        if self._last_pattern_date != today:
+            self._last_pattern_date = today
+            try:
+                self.pattern_aggregator.recalculate()
+                logger.info("Daily pattern recalculation complete")
+            except Exception as e:
+                logger.warning(f"Pattern recalculation failed: {e}")
+            try:
+                learning_db.expire_knowledge()
+                logger.info("Daily knowledge expiry check complete")
+            except Exception as e:
+                logger.warning(f"Knowledge expiry check failed: {e}")
 
     def _get_openrouter_key(self) -> Optional[str]:
         secrets_path = os.path.expanduser("~/.secrets")
@@ -361,6 +402,16 @@ REGELS:
         ema_fast = dataframe[f"ema_{self.buy_ema_fast.value}"]
         ema_slow = dataframe[f"ema_{self.buy_ema_slow.value}"]
         bb_upper = dataframe[f"bb_upper_{self.buy_bb_window.value}"]
+
+        regime = self.regime_detector.get_current()
+        scores = []
+        setup_types = []
+        for _, row in dataframe.iterrows():
+            s, st = self.confluence_scorer(row, regime)
+            scores.append(s)
+            setup_types.append(st)
+        dataframe["confluence_score"] = scores
+        dataframe["setup_type"] = setup_types
 
         dataframe.loc[
             (
