@@ -8,11 +8,11 @@ from typing import Optional
 from user_data.agents import learning_db
 
 MODELS = {
-    "decision": "x-ai/grok-4.20",
+    "decision": "google/gemini-2.0-flash-lite-001",
     "analysis": "anthropic/claude-sonnet-4.6",
 }
 
-DAILY_LIMIT = 50
+DAILY_LIMIT = 200
 TIMEOUT_SECONDS = 5
 MAX_RETRIES = 2
 BASE_URL = "https://openrouter.ai/api/v1/chat/completions"

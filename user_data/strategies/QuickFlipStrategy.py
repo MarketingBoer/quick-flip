@@ -57,7 +57,7 @@ class QuickFlipStrategy(IStrategy):
     sell_rsi_high = IntParameter(65, 75, default=70, space="sell")
 
     # Safety
-    daily_loss_limit_eur = 5.0
+    daily_loss_limit_eur = 10.0
 
     def bot_start(self, **kwargs) -> None:
         self._daily_loss = {"date": "", "loss": 0.0}
@@ -70,6 +70,17 @@ class QuickFlipStrategy(IStrategy):
         self.gatekeeper = PreTradeGatekeeper()
         self.post_analyzer = PostTradeAnalyzer()
         self.pattern_aggregator = PatternAggregator()
+
+        cleaned = Trade.session.query(Trade).filter(
+            Trade.is_open.is_(True), Trade.amount == 0.0
+        ).all()
+        for t in cleaned:
+            logger.warning(f"Removing ghost trade: {t.pair} (id={t.id}, amount=0)")
+            Trade.session.delete(t)
+        if cleaned:
+            Trade.session.commit()
+            logger.info(f"Cleaned {len(cleaned)} ghost trades on startup")
+
         logger.info("Agent team initialized: LearningDB, RegimeDetector, ConfluenceScorer, Gatekeeper, Analyzer, Aggregator")
 
     def informative_pairs(self):
