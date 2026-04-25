@@ -45,7 +45,7 @@ def score_confluence(row, regime: dict) -> tuple[float, str]:
 def _score_ema(row) -> float:
     try:
         close = float(row["close"])
-        ema_short = float(row.get("ema_short", row.get("ema_9", 0)))
+        ema_short = float(row.get("ema_short", row.get("ema_8", 0)))
         ema_long = float(row.get("ema_long", row.get("ema_21", 0)))
         if ema_short == 0 or ema_long == 0:
             return 50.0

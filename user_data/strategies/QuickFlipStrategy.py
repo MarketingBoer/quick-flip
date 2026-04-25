@@ -35,7 +35,7 @@ class QuickFlipStrategy(IStrategy):
         "0": 0.18,
     }
 
-    stoploss = -0.03
+    stoploss = -0.06
 
     trailing_stop = False
     use_custom_stoploss = True
@@ -43,7 +43,7 @@ class QuickFlipStrategy(IStrategy):
     timeframe = "15m"
     process_only_new_candles = True
     startup_candle_count = 50
-    max_open_trades = 2
+    max_open_trades = 8
 
     # Hyperopt parameter spaces
     buy_rsi_lower = IntParameter(20, 35, default=30, space="buy")
@@ -132,6 +132,7 @@ class QuickFlipStrategy(IStrategy):
 
         dataframe["rsi"] = ta.RSI(dataframe, timeperiod=14)
         dataframe["volume_sma"] = ta.SMA(dataframe["volume"], timeperiod=20)
+        dataframe["volume_mean_20"] = dataframe["volume_sma"]
 
         macd = ta.MACD(dataframe, fastperiod=12, slowperiod=26, signalperiod=9)
         dataframe["macd"] = macd["macd"]
@@ -144,38 +145,39 @@ class QuickFlipStrategy(IStrategy):
             dataframe[f"bb_middle_{window}"] = bb["mid"]
             dataframe[f"bb_upper_{window}"] = bb["upper"]
 
+        dataframe["bb_upper"] = dataframe["bb_upper_20"]
+        dataframe["bb_lower"] = dataframe["bb_lower_20"]
+        dataframe["bb_middle"] = dataframe["bb_middle_20"]
+
         dataframe["atr_10"] = ta.ATR(dataframe, timeperiod=10)
 
         st_period, st_mult = 10, 3.0
         hl2 = (dataframe["high"] + dataframe["low"]) / 2
         st_atr = ta.ATR(dataframe, timeperiod=st_period)
-        upper = hl2 + st_mult * st_atr
-        lower = hl2 - st_mult * st_atr
+        upper_arr = (hl2 + st_mult * st_atr).to_numpy().copy()
+        lower_arr = (hl2 - st_mult * st_atr).to_numpy().copy()
+        close_arr = dataframe["close"].to_numpy()
         supertrend = np.zeros(len(dataframe))
         direction = np.ones(len(dataframe))
         for i in range(1, len(dataframe)):
-            if lower.iloc[i] > lower.iloc[i - 1] or dataframe["close"].iloc[i - 1] < lower.iloc[i - 1]:
-                lower.iloc[i] = lower.iloc[i]
-            else:
-                lower.iloc[i] = lower.iloc[i - 1]
-            if upper.iloc[i] < upper.iloc[i - 1] or dataframe["close"].iloc[i - 1] > upper.iloc[i - 1]:
-                upper.iloc[i] = upper.iloc[i]
-            else:
-                upper.iloc[i] = upper.iloc[i - 1]
+            if lower_arr[i] < lower_arr[i - 1] and close_arr[i - 1] >= lower_arr[i - 1]:
+                lower_arr[i] = lower_arr[i - 1]
+            if upper_arr[i] > upper_arr[i - 1] and close_arr[i - 1] <= upper_arr[i - 1]:
+                upper_arr[i] = upper_arr[i - 1]
             if direction[i - 1] == 1:
-                if dataframe["close"].iloc[i] < lower.iloc[i]:
+                if close_arr[i] < lower_arr[i]:
                     direction[i] = -1
-                    supertrend[i] = upper.iloc[i]
+                    supertrend[i] = upper_arr[i]
                 else:
                     direction[i] = 1
-                    supertrend[i] = lower.iloc[i]
+                    supertrend[i] = lower_arr[i]
             else:
-                if dataframe["close"].iloc[i] > upper.iloc[i]:
+                if close_arr[i] > upper_arr[i]:
                     direction[i] = 1
-                    supertrend[i] = lower.iloc[i]
+                    supertrend[i] = lower_arr[i]
                 else:
                     direction[i] = -1
-                    supertrend[i] = upper.iloc[i]
+                    supertrend[i] = upper_arr[i]
         dataframe["supertrend"] = supertrend
         dataframe["supertrend_dir"] = direction
 
@@ -232,9 +234,6 @@ class QuickFlipStrategy(IStrategy):
         current_rate: float, current_profit: float, after_fill: bool,
         **kwargs,
     ) -> float:
-        if current_profit < 0.02:
-            return self.stoploss
-
         dataframe, _ = self.dp.get_analyzed_dataframe(pair, self.timeframe)
         if dataframe.empty or "atr_10" not in dataframe.columns:
             return self.stoploss
@@ -243,7 +242,8 @@ class QuickFlipStrategy(IStrategy):
         if atr <= 0:
             return self.stoploss
 
-        atr_stop = (atr * 2.0) / current_rate
+        multiplier = 1.5 if current_profit >= 0.02 else 2.5
+        atr_stop = (atr * multiplier) / current_rate
         return max(-atr_stop, self.stoploss)
 
     def custom_exit(
@@ -306,7 +306,8 @@ class QuickFlipStrategy(IStrategy):
                 logger.info(f"Gatekeeper rejected {pair} ({setup_type}, score={confluence_score})")
                 return False
         except Exception as e:
-            logger.warning(f"Gatekeeper error, fail-open: {e}")
+            logger.warning(f"Gatekeeper error, fail-closed: {e}")
+            return False
 
         return True
 
@@ -333,7 +334,7 @@ class QuickFlipStrategy(IStrategy):
                     pair, (current_time - timedelta(minutes=30)).isoformat()
                 )
                 if pred:
-                    learning_db.update_prediction_trade_id(pred["id"], str(trade.trade_id))
+                    learning_db.update_prediction_trade_id(pred["id"], str(trade.id))
             except Exception as e:
                 logger.warning(f"Failed to link prediction to trade: {e}")
             return

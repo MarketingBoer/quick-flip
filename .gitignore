@@ -1,18 +1,37 @@
 
-# Freqtrade trading bot ignores
+# Secrets
+user_data/config.json
+user_data/.env
+
+# Freqtrade data
 user_data/data/*
 user_data/hyperopt_results/*
+user_data/backtest_results/
+user_data/logs/
+user_data/trade_journal.jsonl
+user_data/knowledge.jsonl
 *.pkl
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+*.sqlite-journal
 *.feather
 *.db
 *.db-shm
 *.db-wal
 tradesv*.*
 *.log
+
+# Python
 __pycache__/
+*.pyc
+*.pyo
 .venv/
-user_data/.env
+*.egg-info/
+
+# IDE / session artifacts
+.claude-dev-helper/
+.complexity-log.md
+.session-summary.md
+.pair-programming-session.md
 

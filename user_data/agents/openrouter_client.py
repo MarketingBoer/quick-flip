@@ -1,4 +1,5 @@
 import json
+import logging
 import os
 import time
 import urllib.request
@@ -7,8 +8,10 @@ from typing import Optional
 
 from user_data.agents import learning_db
 
+logger = logging.getLogger(__name__)
+
 MODELS = {
-    "decision": "google/gemini-2.0-flash-lite-001",
+    "decision": "deepseek/deepseek-v4-flash",
     "analysis": "anthropic/claude-sonnet-4.6",
 }
 
@@ -30,7 +33,7 @@ def _load_api_key() -> str:
             if line.startswith("export "):
                 line = line[7:]
             if line.startswith("OPENROUTER_API_KEY="):
-                return line.split("=", 1)[1]
+                return line.split("=", 1)[1].strip("'\"")
     raise RuntimeError("OPENROUTER_API_KEY not found in ~/.secrets")
 
 
@@ -96,14 +99,25 @@ def call_llm(prompt: str, tier: str = "analysis", system_prompt: str = "") -> di
 def _parse_json_response(content: str) -> dict:
     content = content.strip()
 
-    if content.startswith("```"):
-        lines = content.split("\n")
-        lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        content = "\n".join(lines).strip()
-
     try:
         return json.loads(content)
     except json.JSONDecodeError:
-        return {"raw_response": content}
+        pass
+
+    import re
+    block = re.search(r"```(?:json)?\s*\n(.*?)```", content, re.DOTALL)
+    if block:
+        try:
+            return json.loads(block.group(1).strip())
+        except json.JSONDecodeError:
+            pass
+
+    brace = re.search(r"\{[^{}]*\}", content, re.DOTALL)
+    if brace:
+        try:
+            return json.loads(brace.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    logger.warning(f"JSON parse failed, returning raw. Content: {content[:200]}")
+    return {"raw_response": content}

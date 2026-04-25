@@ -12,17 +12,17 @@ class PostTradeAnalyzer:
         try:
             self._analyze_inner(trade)
         except Exception as e:
-            logger.error(f"PostTradeAnalyzer exception: {e}")
+            logger.error(f"PostTradeAnalyzer exception: {e}", exc_info=True)
 
     def _analyze_inner(self, trade) -> None:
-        ft_trade_id = str(trade.trade_id)
+        ft_trade_id = str(trade.id)
         prediction = learning_db.get_prediction_by_trade_id(ft_trade_id)
         if prediction is None:
             logger.info(f"No prediction found for trade {ft_trade_id}, skipping analysis")
             return
 
         pair = trade.pair
-        profit_pct = trade.profit_ratio * 100 if hasattr(trade, "profit_ratio") else (trade.profit_pct if hasattr(trade, "profit_pct") else 0)
+        profit_pct = (trade.close_profit or 0) * 100
         exit_reason = str(getattr(trade, "exit_reason", "unknown"))
         open_date = str(getattr(trade, "open_date", ""))
         close_date = str(getattr(trade, "close_date", ""))

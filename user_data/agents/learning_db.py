@@ -317,7 +317,7 @@ def get_prediction_by_pair_time(pair: str, created_after: str) -> Optional[dict]
     conn = _get_conn()
     row = conn.execute(
         """SELECT * FROM predictions
-           WHERE pair=? AND created_at >= ?
+           WHERE pair=? AND created_at >= ? AND source='live'
            ORDER BY created_at DESC LIMIT 1""",
         (pair, created_after),
     ).fetchone()
