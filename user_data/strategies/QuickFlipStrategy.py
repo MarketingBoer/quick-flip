@@ -1,7 +1,9 @@
 import logging
 import os
 import sys
+import threading
 from datetime import datetime, timedelta
+import pandas as pd
 from pandas import DataFrame
 from typing import Optional
 
@@ -57,13 +59,16 @@ class QuickFlipStrategy(IStrategy):
     sell_rsi_high = IntParameter(65, 75, default=70, space="sell")
 
     # Safety
-    daily_loss_limit_eur = 10.0
+    daily_loss_limit_eur = 5.0
 
     def bot_start(self, **kwargs) -> None:
-        self._daily_loss = {"date": "", "loss": 0.0}
         self._last_pattern_date = ""
+        self._aggregator_lock = threading.Lock()
 
         learning_db.init_db()
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        self._daily_loss = {"date": today, "loss": learning_db.get_daily_loss(today)}
         self.learning_db = learning_db
         self.regime_detector = RegimeDetector()
         self.confluence_scorer = score_confluence
@@ -96,7 +101,8 @@ class QuickFlipStrategy(IStrategy):
         if self._last_pattern_date != today:
             self._last_pattern_date = today
             try:
-                self.pattern_aggregator.recalculate()
+                with self._aggregator_lock:
+                    self.pattern_aggregator.recalculate()
                 logger.info("Daily pattern recalculation complete")
             except Exception as e:
                 logger.warning(f"Pattern recalculation failed: {e}")
@@ -109,7 +115,7 @@ class QuickFlipStrategy(IStrategy):
     def _check_daily_loss(self) -> bool:
         today = datetime.now().strftime("%Y-%m-%d")
         if self._daily_loss["date"] != today:
-            self._daily_loss = {"date": today, "loss": 0.0}
+            self._daily_loss = {"date": today, "loss": learning_db.get_daily_loss(today)}
         if self._daily_loss["loss"] >= self.daily_loss_limit_eur:
             logger.warning(
                 f"Daily loss limit reached: €{self._daily_loss['loss']:.2f}"
@@ -120,36 +126,41 @@ class QuickFlipStrategy(IStrategy):
     def _record_loss(self, loss_eur: float):
         today = datetime.now().strftime("%Y-%m-%d")
         if self._daily_loss["date"] != today:
-            self._daily_loss = {"date": today, "loss": 0.0}
+            self._daily_loss = {"date": today, "loss": learning_db.get_daily_loss(today)}
         if loss_eur > 0:
+            try:
+                learning_db.add_daily_loss(loss_eur, today)
+            except Exception as e:
+                logger.error(f"Failed to persist daily loss: {e}")
             self._daily_loss["loss"] += loss_eur
 
     def populate_indicators(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
-        for period in range(5, 16):
-            dataframe[f"ema_{period}"] = ta.EMA(dataframe, timeperiod=period)
-        for period in range(15, 41):
-            dataframe[f"ema_{period}"] = ta.EMA(dataframe, timeperiod=period)
+        indicators = {}
 
-        dataframe["rsi"] = ta.RSI(dataframe, timeperiod=14)
-        dataframe["volume_sma"] = ta.SMA(dataframe["volume"], timeperiod=20)
-        dataframe["volume_mean_20"] = dataframe["volume_sma"]
+        for period in range(5, 41):
+            indicators[f"ema_{period}"] = ta.EMA(dataframe, timeperiod=period)
+
+        indicators["rsi"] = ta.RSI(dataframe, timeperiod=14)
+        volume_sma = ta.SMA(dataframe["volume"], timeperiod=20)
+        indicators["volume_sma"] = volume_sma
+        indicators["volume_mean_20"] = volume_sma
 
         macd = ta.MACD(dataframe, fastperiod=12, slowperiod=26, signalperiod=9)
-        dataframe["macd"] = macd["macd"]
-        dataframe["macdsignal"] = macd["macdsignal"]
-        dataframe["macdhist"] = macd["macdhist"]
+        indicators["macd"] = macd["macd"]
+        indicators["macdsignal"] = macd["macdsignal"]
+        indicators["macdhist"] = macd["macdhist"]
 
         for window in range(15, 31):
             bb = qtpylib.bollinger_bands(dataframe["close"], window=window, stds=2)
-            dataframe[f"bb_lower_{window}"] = bb["lower"]
-            dataframe[f"bb_middle_{window}"] = bb["mid"]
-            dataframe[f"bb_upper_{window}"] = bb["upper"]
+            indicators[f"bb_lower_{window}"] = bb["lower"]
+            indicators[f"bb_middle_{window}"] = bb["mid"]
+            indicators[f"bb_upper_{window}"] = bb["upper"]
 
-        dataframe["bb_upper"] = dataframe["bb_upper_20"]
-        dataframe["bb_lower"] = dataframe["bb_lower_20"]
-        dataframe["bb_middle"] = dataframe["bb_middle_20"]
+        indicators["bb_upper"] = indicators["bb_upper_20"]
+        indicators["bb_lower"] = indicators["bb_lower_20"]
+        indicators["bb_middle"] = indicators["bb_middle_20"]
 
-        dataframe["atr_10"] = ta.ATR(dataframe, timeperiod=10)
+        indicators["atr_10"] = ta.ATR(dataframe, timeperiod=10)
 
         st_period, st_mult = 10, 3.0
         hl2 = (dataframe["high"] + dataframe["low"]) / 2
@@ -178,10 +189,12 @@ class QuickFlipStrategy(IStrategy):
                 else:
                     direction[i] = -1
                     supertrend[i] = upper_arr[i]
-        dataframe["supertrend"] = supertrend
-        dataframe["supertrend_dir"] = direction
+        indicators["supertrend"] = supertrend
+        indicators["supertrend_dir"] = direction
 
-        return dataframe
+        indicator_df = pd.DataFrame(indicators, index=dataframe.index)
+        new_cols = [c for c in indicator_df.columns if c not in dataframe.columns]
+        return pd.concat([dataframe, indicator_df[new_cols]], axis=1)
 
     def populate_entry_trend(self, dataframe: DataFrame, metadata: dict) -> DataFrame:
         ema_fast = dataframe[f"ema_{self.buy_ema_fast.value}"]
@@ -352,12 +365,39 @@ class QuickFlipStrategy(IStrategy):
         if profit_abs < 0:
             self._record_loss(abs(profit_abs))
 
+        trade_snapshot = self._snapshot_trade(trade)
+        logger.info(f"Spawning async post-trade analysis for trade {trade_snapshot['id']}")
+        threading.Thread(
+            target=self._post_trade_async,
+            args=(trade_snapshot,),
+            daemon=True,
+        ).start()
+
+    @staticmethod
+    def _snapshot_trade(trade: Trade) -> dict:
+        duration_minutes = 0.0
+        if trade.open_date and trade.close_date:
+            try:
+                duration_minutes = (trade.close_date - trade.open_date).total_seconds() / 60
+            except Exception:
+                pass
+        return {
+            "id": str(trade.id),
+            "pair": trade.pair,
+            "close_profit": trade.close_profit or 0,
+            "exit_reason": str(getattr(trade, "exit_reason", "unknown")),
+            "open_date": str(getattr(trade, "open_date", "")),
+            "close_date": str(getattr(trade, "close_date", "")),
+            "duration_minutes": duration_minutes,
+        }
+
+    def _post_trade_async(self, snap: dict) -> None:
         try:
-            self.post_analyzer.analyze(trade)
+            self.post_analyzer.analyze_from_snapshot(snap)
         except Exception as e:
             logger.warning(f"Post-trade analysis failed: {e}")
-
         try:
-            self.pattern_aggregator.recalculate()
+            with self._aggregator_lock:
+                self.pattern_aggregator.recalculate()
         except Exception as e:
             logger.warning(f"Pattern recalculation after trade failed: {e}")

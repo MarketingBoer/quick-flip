@@ -1,5 +1,4 @@
 import logging
-from typing import Optional
 
 from user_data.agents import learning_db
 from user_data.agents.openrouter_client import call_llm, CallLimitExceeded
@@ -8,32 +7,27 @@ logger = logging.getLogger(__name__)
 
 
 class PostTradeAnalyzer:
-    def analyze(self, trade) -> None:
+    def analyze_from_snapshot(self, snap: dict) -> None:
         try:
-            self._analyze_inner(trade)
+            self._analyze_from_snap(snap)
         except Exception as e:
             logger.error(f"PostTradeAnalyzer exception: {e}", exc_info=True)
 
-    def _analyze_inner(self, trade) -> None:
-        ft_trade_id = str(trade.id)
+    def _analyze_from_snap(self, snap: dict) -> None:
+        ft_trade_id = snap["id"]
         prediction = learning_db.get_prediction_by_trade_id(ft_trade_id)
         if prediction is None:
             logger.info(f"No prediction found for trade {ft_trade_id}, skipping analysis")
             return
 
-        pair = trade.pair
-        profit_pct = (trade.close_profit or 0) * 100
-        exit_reason = str(getattr(trade, "exit_reason", "unknown"))
-        open_date = str(getattr(trade, "open_date", ""))
-        close_date = str(getattr(trade, "close_date", ""))
-        duration_minutes = 0.0
-        if hasattr(trade, "open_date") and hasattr(trade, "close_date") and trade.close_date and trade.open_date:
-            try:
-                delta = trade.close_date - trade.open_date
-                duration_minutes = delta.total_seconds() / 60
-            except Exception:
-                pass
+        pair = snap["pair"]
+        profit_pct = snap["close_profit"] * 100
+        exit_reason = snap["exit_reason"]
+        duration_minutes = snap["duration_minutes"]
 
+        self._run_analysis(prediction, pair, profit_pct, exit_reason, duration_minutes)
+
+    def _run_analysis(self, prediction: dict, pair: str, profit_pct: float, exit_reason: str, duration_minutes: float) -> None:
         entry_thesis = prediction.get("entry_thesis", "Geen thesis beschikbaar")
         setup_type = prediction.get("setup_type", "unknown")
         market_regime = prediction.get("market_regime", "unknown")

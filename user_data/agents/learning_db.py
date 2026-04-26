@@ -1,6 +1,6 @@
 import os
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
 
 DB_PATH = os.path.expanduser("~/Projects/quick-flip/user_data/learning.db")
@@ -86,6 +86,11 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             date TEXT NOT NULL UNIQUE,
             count INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS daily_loss (
+            date TEXT PRIMARY KEY,
+            cumulative_loss REAL DEFAULT 0.0
         );
     """)
     conn.close()
@@ -313,6 +318,30 @@ def upsert_pattern(
     conn.close()
 
 
+def get_daily_loss(date: Optional[str] = None) -> float:
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    conn = _get_conn()
+    row = conn.execute(
+        "SELECT cumulative_loss FROM daily_loss WHERE date=?", (date,)
+    ).fetchone()
+    conn.close()
+    return row["cumulative_loss"] if row else 0.0
+
+
+def add_daily_loss(amount: float, date: Optional[str] = None):
+    if date is None:
+        date = datetime.now().strftime("%Y-%m-%d")
+    conn = _get_conn()
+    conn.execute(
+        """INSERT INTO daily_loss (date, cumulative_loss) VALUES (?, ?)
+           ON CONFLICT(date) DO UPDATE SET cumulative_loss = cumulative_loss + ?""",
+        (date, amount, amount),
+    )
+    conn.commit()
+    conn.close()
+
+
 def get_prediction_by_pair_time(pair: str, created_after: str) -> Optional[dict]:
     conn = _get_conn()
     row = conn.execute(
@@ -323,6 +352,18 @@ def get_prediction_by_pair_time(pair: str, created_after: str) -> Optional[dict]
     ).fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def get_completed_trade_count(setup_type: str, market_regime: str) -> int:
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT COUNT(*) as cnt FROM predictions
+           WHERE setup_type=? AND market_regime=? AND source='live'
+           AND profit_pct IS NOT NULL""",
+        (setup_type, market_regime),
+    ).fetchone()
+    conn.close()
+    return row["cnt"] if row else 0
 
 
 def update_prediction_trade_id(prediction_id: int, ft_trade_id: str):
