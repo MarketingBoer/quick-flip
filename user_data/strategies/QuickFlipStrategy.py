@@ -343,11 +343,14 @@ class QuickFlipStrategy(IStrategy):
     ) -> None:
         if order.ft_order_side == "buy":
             try:
-                pred = learning_db.get_prediction_by_pair_time(
-                    pair, (current_time - timedelta(minutes=30)).isoformat()
+                pred = learning_db.get_prediction_near_trade_open(
+                    pair, trade.open_date.isoformat()
                 )
                 if pred:
                     learning_db.update_prediction_trade_id(pred["id"], str(trade.id))
+                    logger.info(f"Linked prediction #{pred['id']} to trade #{trade.id} (delta={pred.get('delta', '?')}s)")
+                else:
+                    logger.warning(f"No prediction found for {pair} near {trade.open_date}")
             except Exception as e:
                 logger.warning(f"Failed to link prediction to trade: {e}")
             return

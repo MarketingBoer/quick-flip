@@ -354,6 +354,27 @@ def get_prediction_by_pair_time(pair: str, created_after: str) -> Optional[dict]
     return dict(row) if row else None
 
 
+def get_prediction_near_trade_open(
+    pair: str,
+    open_date: str,
+    tolerance_seconds: int = 1800,
+) -> Optional[dict]:
+    """Find the unlinked live prediction closest to a trade open timestamp."""
+    conn = _get_conn()
+    row = conn.execute(
+        """SELECT *,
+                  ABS(strftime('%s', created_at) - strftime('%s', ?)) AS delta
+           FROM predictions
+           WHERE pair=? AND source='live' AND ft_trade_id IS NULL
+             AND ABS(strftime('%s', created_at) - strftime('%s', ?)) <= ?
+           ORDER BY delta ASC, created_at DESC
+           LIMIT 1""",
+        (open_date, pair, open_date, tolerance_seconds),
+    ).fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
 def get_completed_trade_count(setup_type: str, market_regime: str) -> int:
     conn = _get_conn()
     row = conn.execute(
