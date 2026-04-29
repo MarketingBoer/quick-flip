@@ -8,7 +8,7 @@ from user_data.agents.openrouter_client import call_llm, CallLimitExceeded
 logger = logging.getLogger(__name__)
 
 COOLDOWN_SECONDS = 900
-MIN_CONFLUENCE_FOR_LLM = 60
+MIN_CONFLUENCE_FOR_LLM = 55
 
 
 class PreTradeGatekeeper:

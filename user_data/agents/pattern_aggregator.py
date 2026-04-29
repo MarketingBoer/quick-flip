@@ -57,10 +57,8 @@ class PatternAggregator:
 
     @staticmethod
     def _calculate_rating(total: int, win_rate: float, avg_profit: float) -> str:
-        if total < 10:
-            return "NEUTRAL"
-        if win_rate > 60 and avg_profit > 0.5:
-            return "SEEK"
-        if win_rate < 40 or avg_profit < -1.0:
+        if total >= 5 and (win_rate < 40 or avg_profit < -0.70):
             return "AVOID"
+        if total >= 7 and win_rate > 57 and avg_profit > 0.20:
+            return "SEEK"
         return "NEUTRAL"

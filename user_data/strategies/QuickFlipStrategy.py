@@ -255,7 +255,7 @@ class QuickFlipStrategy(IStrategy):
         if atr <= 0:
             return self.stoploss
 
-        multiplier = 1.5 if current_profit >= 0.02 else 2.5
+        multiplier = 1.5 if current_profit >= 0.01 else 2.5
         atr_stop = (atr * multiplier) / current_rate
         return max(-atr_stop, self.stoploss)
 
